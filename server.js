@@ -19,7 +19,11 @@ io.on("connection", (socket) => {
     socket.on("joinRoom", (room) => {
         console.log(`User ${socket.id} joined room: ${room}`);
         socket.join(room);
+        // Notify everyone in the room except the sender
         socket.to(room).emit("newUser", socket.id);
+        // Send existing users to the new user
+        const usersInRoom = Array.from(io.sockets.adapter.rooms.get(room)).filter(id => id !== socket.id);
+        socket.emit("existingUsers", usersInRoom);
     });
 
     // Handle WebRTC signaling messages

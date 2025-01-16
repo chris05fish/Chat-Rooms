@@ -55,7 +55,6 @@
         <h2 id="roomTitle"></h2>
         <div id="videoContainer">
             <video id="localVideo" autoplay muted></video>
-            <!-- Other remote videos will be appended here dynamically -->
         </div>
     </div>
 
@@ -63,7 +62,6 @@
     <script>
         const socket = io("http://localhost:3000");
 
-        // Debugging connection to the server
         socket.on("connect", () => {
             console.log("Connected to the server:", socket.id);
         });
@@ -77,7 +75,8 @@
 
         let currentRoom = null;
         let localStream = null;
-        const peerConnections = {}; // Track peer connections
+        const peerConnections = {}; // Store peer connections
+        const usersInRoom = new Set(); // Track users in the room
 
         // Generate room buttons
         rooms.forEach(room => {
@@ -88,7 +87,7 @@
             roomsDiv.appendChild(roomDiv);
         });
 
-        // Function to join a room
+        // Join the room
         function joinRoom(room) {
             if (currentRoom) {
                 socket.emit("leaveRoom", currentRoom);
@@ -101,106 +100,101 @@
             startVideoChat();
         }
 
-        // Function to start video chat
+        // Start video chat
         async function startVideoChat() {
             try {
-                // Get local media stream (camera and microphone)
+                // Get local media stream
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = localStream;
 
-                // Create a new peer connection
-                const peerConnection = new RTCPeerConnection();
-                peerConnections[socket.id] = peerConnection;
+                // Notify server that we're ready for signaling
+                socket.emit("signal", { room: currentRoom, signal: { type: "ready" } });
 
-                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-                // Set up ICE candidate handling
-                peerConnection.onicecandidate = event => {
-                    if (event.candidate) {
-                        socket.emit("signal", { room: currentRoom, signal: { type: "ice", candidate: event.candidate } });
-                    }
-                };
-
-                // Create an offer to connect to another peer
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                socket.emit("signal", { room: currentRoom, signal: { type: "offer", offer: offer } });
-
-                // Create a new video element for remote video
-                const remoteVideo = document.createElement('video');
-                remoteVideo.autoplay = true;
-                videoContainer.appendChild(remoteVideo);
-
-                // Handle remote video stream
-                peerConnection.ontrack = event => {
-                    remoteVideo.srcObject = event.streams[0];
-                };
             } catch (error) {
                 console.error("Error accessing media devices:", error);
             }
         }
 
-        // Handle signaling messages
-        socket.on("signal", async (data) => {
-            if (data.user !== socket.id && data.signal) {
-                let peerConnection;
-                if (!peerConnections[data.user]) {
-                    peerConnection = new RTCPeerConnection();
-                    peerConnections[data.user] = peerConnection;
-
-                    // Add local stream tracks to the new peer connection
-                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-                    // Handle ICE candidates
-                    peerConnection.onicecandidate = event => {
-                        if (event.candidate) {
-                            socket.emit("signal", { room: currentRoom, signal: { type: "ice", candidate: event.candidate } });
-                        }
-                    };
-
-                    // Create new video element for remote video
-                    const remoteVideo = document.createElement('video');
-                    remoteVideo.autoplay = true;
-                    videoContainer.appendChild(remoteVideo);
-
-                    // Handle incoming remote video stream
-                    peerConnection.ontrack = event => {
-                        remoteVideo.srcObject = event.streams[0];
-                    };
-                }
-
-                // Handle offer/answer/ICE exchange
-                if (data.signal.type === "offer") {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.offer));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    socket.emit("signal", { room: currentRoom, signal: { type: "answer", answer: answer } });
-                } else if (data.signal.type === "answer") {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.answer));
-                } else if (data.signal.type === "ice") {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
-                }
-            }
-        });
-
-        // Handle new users joining the room
+        // Handle new users joining
         socket.on("newUser", (userId) => {
             console.log(`New user joined: ${userId}`);
-            startVideoChat();
+            createPeerConnection(userId);
         });
 
-        // Leave video chat and stop streams
+        // Handle existing users
+        socket.on("existingUsers", (users) => {
+            users.forEach((userId) => {
+                createPeerConnection(userId);
+            });
+        });
+
+        // Handle signaling messages
+        socket.on("signal", async (data) => {
+            const { user, signal } = data;
+            if (user !== socket.id) {
+                let peerConnection = peerConnections[user];
+
+                // If it's a new user, create a peer connection
+                if (!peerConnection) {
+                    peerConnection = createPeerConnection(user);
+                }
+
+                if (signal.type === "offer") {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.offer));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    socket.emit("signal", { room: currentRoom, signal: { type: "answer", answer: answer }, user: socket.id });
+                } else if (signal.type === "answer") {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.answer));
+                } else if (signal.type === "ice") {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                }
+            }
+        });
+
+        // Create peer connection for a user
+        function createPeerConnection(userId) {
+            const peerConnection = new RTCPeerConnection();
+            peerConnections[userId] = peerConnection;
+
+            // Add local tracks
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            // Create a video element for remote user
+            const remoteVideo = document.createElement('video');
+            remoteVideo.autoplay = true;
+            videoContainer.appendChild(remoteVideo);
+
+            // Handle remote stream
+            peerConnection.ontrack = event => {
+                remoteVideo.srcObject = event.streams[0];
+            };
+
+            // Handle ICE candidates
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit("signal", { room: currentRoom, signal: { type: "ice", candidate: event.candidate }, user: userId });
+                }
+            };
+
+            // Create offer to connect
+            const offer = peerConnection.createOffer();
+            peerConnection.setLocalDescription(offer);
+            socket.emit("signal", { room: currentRoom, signal: { type: "offer", offer: offer }, user: userId });
+
+            return peerConnection;
+        }
+
+        // Leave video chat and clean up
         function leaveVideoChat() {
-            for (const userId in peerConnections) {
+            Object.keys(peerConnections).forEach(userId => {
                 const peerConnection = peerConnections[userId];
                 peerConnection.close();
-            }
+            });
             peerConnections = {};
-            videoContainer.innerHTML = ''; // Remove all remote videos
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-            }
+            videoContainer.innerHTML = '';
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
         }
     </script>
 </body>

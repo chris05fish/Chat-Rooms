@@ -32,6 +32,7 @@
             display: flex;
             justify-content: center;
             margin-top: 20px;
+            flex-wrap: wrap;
         }
         video {
             width: 300px;
@@ -54,7 +55,7 @@
         <h2 id="roomTitle"></h2>
         <div id="videoContainer">
             <video id="localVideo" autoplay muted></video>
-            <video id="remoteVideo" autoplay></video>
+            <!-- Other remote videos will be appended here dynamically -->
         </div>
     </div>
 
@@ -72,12 +73,11 @@
         const videoSection = document.getElementById('videoSection');
         const roomTitle = document.getElementById('roomTitle');
         const localVideo = document.getElementById('localVideo');
-        const remoteVideo = document.getElementById('remoteVideo');
+        const videoContainer = document.getElementById('videoContainer');
 
         let currentRoom = null;
         let localStream = null;
-        let peerConnection = null;
-        const peerConnections = {};
+        const peerConnections = {}; // Track peer connections
 
         // Generate room buttons
         rooms.forEach(room => {
@@ -109,7 +109,9 @@
                 localVideo.srcObject = localStream;
 
                 // Create a new peer connection
-                peerConnection = new RTCPeerConnection();
+                const peerConnection = new RTCPeerConnection();
+                peerConnections[socket.id] = peerConnection;
+
                 localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
                 // Set up ICE candidate handling
@@ -119,16 +121,20 @@
                     }
                 };
 
-                // Set up remote video stream handling
-                peerConnection.ontrack = event => {
-                    remoteVideo.srcObject = event.streams[0];
-                };
-
                 // Create an offer to connect to another peer
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 socket.emit("signal", { room: currentRoom, signal: { type: "offer", offer: offer } });
 
+                // Create a new video element for remote video
+                const remoteVideo = document.createElement('video');
+                remoteVideo.autoplay = true;
+                videoContainer.appendChild(remoteVideo);
+
+                // Handle remote video stream
+                peerConnection.ontrack = event => {
+                    remoteVideo.srcObject = event.streams[0];
+                };
             } catch (error) {
                 console.error("Error accessing media devices:", error);
             }
@@ -137,54 +143,58 @@
         // Handle signaling messages
         socket.on("signal", async (data) => {
             if (data.user !== socket.id && data.signal) {
-                if (data.signal.type === "offer") {
-                    // Handle offer
+                let peerConnection;
+                if (!peerConnections[data.user]) {
                     peerConnection = new RTCPeerConnection();
                     peerConnections[data.user] = peerConnection;
 
+                    // Add local stream tracks to the new peer connection
                     localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
+                    // Handle ICE candidates
                     peerConnection.onicecandidate = event => {
                         if (event.candidate) {
                             socket.emit("signal", { room: currentRoom, signal: { type: "ice", candidate: event.candidate } });
                         }
                     };
 
+                    // Create new video element for remote video
+                    const remoteVideo = document.createElement('video');
+                    remoteVideo.autoplay = true;
+                    videoContainer.appendChild(remoteVideo);
+
+                    // Handle incoming remote video stream
                     peerConnection.ontrack = event => {
                         remoteVideo.srcObject = event.streams[0];
                     };
+                }
 
+                // Handle offer/answer/ICE exchange
+                if (data.signal.type === "offer") {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.offer));
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
                     socket.emit("signal", { room: currentRoom, signal: { type: "answer", answer: answer } });
-
                 } else if (data.signal.type === "answer") {
-                    // Handle answer
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.answer));
-
                 } else if (data.signal.type === "ice") {
-                    // Handle ICE candidate
-                    try {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
-                    } catch (e) {
-                        console.error("Error adding ICE candidate:", e);
-                    }
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
                 }
             }
         });
 
         // Leave video chat and stop streams
         function leaveVideoChat() {
-            if (peerConnection) {
+            for (const userId in peerConnections) {
+                const peerConnection = peerConnections[userId];
                 peerConnection.close();
-                peerConnection = null;
             }
+            peerConnections = {};
+            videoContainer.innerHTML = ''; // Remove all remote videos
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
                 localStream = null;
             }
-            remoteVideo.srcObject = null;
         }
     </script>
 </body>

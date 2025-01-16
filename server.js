@@ -19,13 +19,7 @@ io.on("connection", (socket) => {
     socket.on("joinRoom", (room) => {
         console.log(`User ${socket.id} joined room: ${room}`);
         socket.join(room);
-        socket.to(room).emit("message", { user: "Server", message: `${socket.id} joined the room.` });
-    });
-
-    // User leaves a room
-    socket.on("leaveRoom", (room) => {
-        console.log(`User ${socket.id} left room: ${room}`);
-        socket.leave(room);
+        socket.to(room).emit("newUser", socket.id);
     });
 
     // Handle WebRTC signaling messages
